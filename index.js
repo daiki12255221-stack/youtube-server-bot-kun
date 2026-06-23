@@ -75,43 +75,33 @@ async function checkAllInstances() {
   }
 }
 
+// ---------------------------------------------------
 // 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
+// ---------------------------------------------------
 app.get('/', async (req, res) => {
-  // 日本時間の現在時刻を取得
-  const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
-  const hour = now.getHours();
+  const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+  console.log(`[${nowStr}] 定期チェックアクセスを受信（24時間稼働モード）`);
 
-  console.log(`[JST: ${hour}時] サイトへのアクセスを受信しました。`);
+  // ⚡【Vercelタイムアウト対策】
+  // クローンジョブを待たせないために、先に「200 OK」を返して切断させます
+  res.status(200).send("巡回命令を受信しました。裏側で即座に生存チェックとChatwork投稿を開始します。");
 
-  // ご指定の時間帯【7:00〜16:00(15:59)】および【23:00〜翌2:00(1:59)】
-  const isTargetTime = (hour >= 7 && hour < 16) || (hour >= 23 || hour < 2);
+  // クローンジョブを帰らせたあとに、Vercelの裏で残りの重い通信処理をノンストップで実行
+  try {
+    // 1. 時間帯に関係なく、いつでもサブ垢の生存確認を走らせる
+    await checkAllInstances();
 
-  if (isTargetTime) {
-    // ⚡【Vercelタイムアウト対策：時間差トリック】
-    // 先にクローンジョブ（接続元）に「200 OK」を返し、1秒で帰らせて通信を完了させます！
-    res.status(200).send("巡回命令を受信しました。裏でチェックとChatwork投稿を開始します。");
-
-    // クローンジョブが帰ったあとに、Vercelの裏側で残りの重い処理をじっくり実行します
-    try {
-      // 1. サブ垢の生存確認を走らせる
-      await checkAllInstances();
-
-      // 2. 確定した最新のURLをChatworkに投稿する
-      const replyMessage = 
+    // 2. 最新のURLをChatworkに即時投稿
+    const replyMessage = 
 `📺 自作YouTubeサイト案内Bot (自動巡回完了)
 
 現在クレジットが残っていて快適に動くURLはこちらです！
 👇
 ${latestAvailableUrl}`;
 
-      await sendChatworkMessage(replyMessage);
-    } catch (bgError) {
-      console.error("バックグラウンド処理でエラー発生:", bgError);
-    }
-
-  } else {
-    console.log("➔ スリープ時間帯のため、サブ垢へのアクセスおよびChatwork通知をスキップしました。");
-    res.status(200).send("お休み時間帯のため、チェックと通知をスキップしました（クレジット保護モード）");
+    await sendChatworkMessage(replyMessage);
+  } catch (bgError) {
+    console.error("バックグラウンド処理でエラー発生:", bgError);
   }
 });
 
