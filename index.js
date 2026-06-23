@@ -44,7 +44,8 @@ async function checkAllInstances() {
   const raceTask = async (url) => {
     const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒タイムアウト
+    // 🔥【Vercelタイムアウト対策】制限時間を8秒から4秒に縮めて、全体の処理が10秒を超えないようにします
+    const timeoutId = setTimeout(() => controller.abort(), 4000); 
 
     try {
       const res = await fetch(`${baseUrl}/api/ping`, {
@@ -82,16 +83,14 @@ app.get('/', async (req, res) => {
   const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
   console.log(`[${nowStr}] 定期チェックアクセスを受信（24時間稼働モード）`);
 
-  // ⚡【Vercelタイムアウト対策】
-  // クローンジョブを待たせないために、先に「200 OK」を返して切断させます
-  res.status(200).send("巡回命令を受信しました。裏側で即座に生存チェックとChatwork投稿を開始します。");
-
-  // クローンジョブを帰らせたあとに、Vercelの裏で残りの重い通信処理をノンストップで実行
   try {
-    // 1. 時間帯に関係なく、いつでもサブ垢の生存確認を走らせる
+    // ⚡【凍結防止対策】
+    // 先にレスポンスを返さず、生存確認とChatworkへの投稿が「完全に終わるまで」しっかり待ちます！
+    
+    // 1. サブ垢の生存確認を走らせる（最長4秒）
     await checkAllInstances();
 
-    // 2. 最新のURLをChatworkに即時投稿
+    // 2. 最新のURLをChatworkに投稿する（約1〜2秒）
     const replyMessage = 
 `📺 自作YouTubeサイト案内Bot (自動巡回完了)
 
@@ -100,10 +99,15 @@ app.get('/', async (req, res) => {
 ${latestAvailableUrl}`;
 
     await sendChatworkMessage(replyMessage);
-  } catch (bgError) {
-    console.error("バックグラウンド処理でエラー発生:", bgError);
+
+    // ✨ すべての処理が無事に終わった後に、クローンジョブに「完了したよ！」と返信します
+    res.status(200).send(`巡回＆Chatworkへの投稿が完了しました。最新URL: ${latestAvailableUrl}`);
+
+  } catch (error) {
+    console.error("処理中でエラー発生:", error);
+    res.status(500).send(`エラーが発生しました:\n${error.message}`);
   }
 });
 
-// 🔥【Vercel対応】app.listenを削除し、Expressのインスタンスをデフォルトエクスポート
+// 🔥【Vercel対応】Expressのインスタンスをデフォルトエクスポート
 export default app;
