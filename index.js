@@ -8,7 +8,6 @@ app.use(express.urlencoded({ extended: true }));
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
 const CHATWORK_ROOM_ID = "440162416"; 
 
-// 🎯 今回テストするURLだけに絞り込み
 const SANDBOX_URLS = [
   "https://znpf9v-3000.csb.app/"
 ];
@@ -37,7 +36,7 @@ async function sendChatworkMessage(message) {
 }
 
 async function checkAllInstances() {
-  console.log("🧪 【ピンポイントテスト】指定のURLで生存判定の実験を開始します...");
+  console.log("🧪 【鉄壁のHTML選別モード】クッション画面だけを見分けます...");
   currentPingTime = ""; 
 
   const url = SANDBOX_URLS[0];
@@ -60,49 +59,55 @@ async function checkAllInstances() {
     const endTime = performance.now();
     const pingMs = Math.round(endTime - startTime);
 
-    // パターン1：もし直接 200 OK が返ってきた場合
+    // 【1】 奇跡的に200 OKが返ってきたら当然文句なしで生存！
     if (res.status === 200) {
-      console.log(`🟢 [${baseUrl}] 奇跡の直接200 OKを検出！`);
+      console.log(`🟢 [${baseUrl}] 直接200 OKを検出！`);
       latestAvailableUrl = baseUrl;
       currentPingTime = ` (判定: Direct OK / ${pingMs}ms)`;
       return;
     }
 
-    // パターン2：エラー（400など）だけど、中身がHTMLの場合
+    // 【2】 200以外（400など）だった場合、HTMLの中身を大捜査
     const rawText = await res.text();
-    if (rawText.includes("<!DOCTYPE") || rawText.includes("CodeSandbox") || rawText.includes("proceed")) {
-      console.log(`🟢 [${baseUrl}] クッション画面（HTML）を検出。これを生存とみなします！`);
+
+    // 🚨 まず「絶対に死んでるキーワード（クレジット切れ画面など）」を弾く
+    if (rawText.includes("Limit Exceeded") || rawText.includes("Upgrade your plan") || rawText.includes("Credit Expired")) {
+      console.log(`❌ [${baseUrl}] 警告：クレジット切れ、またはプラン上限エラー画面を検出しました。`);
+      throw new Error("クレジット切れ画面に遭遇");
+    }
+
+    // ⭕ 生きている時のクッション画面特有のキーワードが入っているかチェック
+    if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
+      console.log(`🟢 [${baseUrl}] 正真正銘の「生存クッション画面」を検出！友達が踏めば起きる状態です。`);
       latestAvailableUrl = baseUrl;
-      currentPingTime = ` (判定: クッション画面検知成功 / ${pingMs}ms)`;
+      currentPingTime = ` (判定: 生存クッション画面 / ${pingMs}ms)`;
       return;
     }
 
-    throw new Error(`想定外のエラー（ステータス: ${res.status}）`);
+    // どちらでもない謎のHTMLエラーの場合
+    throw new Error(`想定外のエラー画面（ステータス: ${res.status}）`);
 
   } catch (err) {
     clearTimeout(timeoutId);
-    console.log(`❌ [${baseUrl}] 判定エラー: ${err.message}`);
+    console.log(`❌ [${baseUrl}] 停止・死亡と判定: ${err.message}`);
     latestAvailableUrl = "⚠️ 対象のCodeSandboxが完全に停止しているか、クレジットが切れています。";
     currentPingTime = "";
   }
 }
 
-// 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
 app.get('/', async (req, res) => {
   try {
     await checkAllInstances();
 
     const replyMessage = 
-`📺 自作YouTubeサイト案内Bot (実験モード)
+`📺 自作YouTubeサイト案内Bot (選別判定モード)
 
 検証対象のURL判定結果はこちらです！
 👇
 ${latestAvailableUrl}${currentPingTime}`;
 
     await sendChatworkMessage(replyMessage);
-
-    res.status(200).send(`実験完了しました。最新結果: ${latestAvailableUrl}`);
-
+    res.status(200).send(`検証完了: ${latestAvailableUrl}`);
   } catch (error) {
     res.status(500).send(`エラー発生:\n${error.message}`);
   }
