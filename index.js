@@ -1,4 +1,8 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import express from 'express';
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ================== 【設定エリア】 ==================
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
@@ -12,30 +16,6 @@ const SANDBOX_URLS = [
 ];
 // ===================================================
 
-serve(async (req) => {
-  const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  console.log(`[${nowStr}] Supabaseが巡回アクセスを受信（ブロックなし確定）`);
-
-  try {
-    const latestAvailableUrl = await checkAllInstances();
-
-    const replyMessage = 
-`📺 自作YouTubeサイト案内Bot (自動巡回完了)
-
-現在クレジットが残っていて快適に動くURLはこちらです！
-👇
-${latestAvailableUrl}`;
-
-    await sendChatworkMessage(replyMessage);
-
-    return new Response(`巡回完了。最新URL: ${latestAvailableUrl}`, { status: 200 });
-
-  } catch (error) {
-    console.error("エラー発生:", error);
-    return new Response(`エラー: ${error.message}`, { status: 500 });
-  }
-});
-
 async function sendChatworkMessage(message) {
   const res = await fetch(
     `https://api.chatwork.com/v2/rooms/${CHATWORK_ROOM_ID}/messages`,
@@ -48,23 +28,19 @@ async function sendChatworkMessage(message) {
       body: new URLSearchParams({ body: message }),
     }
   );
-  if (!res.ok) {
-    console.log("❌ Chatwork送信エラー:", await res.text());
-  } else {
-    console.log("🚀 Chatworkへの自動通知に成功しました！");
-  }
+  if (!res.ok) console.log("❌ Chatwork送信エラー:", await res.text());
 }
 
-async function checkAllInstances() {
-  const fetchWithRetry = async (baseUrl, attempt = 1) => {
-    const maxAttempts = 3;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒粘る
+// 🛠️ Vercelの10秒制限の枠内で選別する関数
+async function checkInstancesWithTimeout() {
+  const controller = new AbortController();
+  // ⚡ Vercelが死ぬ前に「7.5秒」で強引に見切るタイマー
+  const timeoutId = setTimeout(() => controller.abort(), 7500); 
 
+  const raceTask = async (url) => {
+    const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
     try {
-      console.log(`📡 [${baseUrl}] 通信試行中... (回数: ${attempt}/${maxAttempts})`);
-      const startTime = Date.now();
-
+      const startTime = performance.now();
       const res = await fetch(`${baseUrl}/api/ping`, {
         signal: controller.signal,
         headers: { 
@@ -72,53 +48,75 @@ async function checkAllInstances() {
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
       });
-      clearTimeout(timeoutId);
 
-      const endTime = Date.now();
-      const pingMs = Math.round(endTime - startTime);
+      const pingMs = Math.round(performance.now() - startTime);
 
-      if (res.status === 200) {
-        return { baseUrl, pingMs, reason: `Direct OK (${attempt}回目)` };
-      }
+      if (res.status === 200) return { baseUrl, pingMs, reason: "Direct OK" };
 
       const rawText = await res.text();
-
       if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
-        return { baseUrl, pingMs, reason: `Preview Alive (${attempt}回目)` };
+        return { baseUrl, pingMs, reason: "Preview Alive" };
       }
-
-      if (rawText.includes("Limit Exceeded") || rawText.includes("Upgrade your plan") || rawText.includes("Credit Expired")) {
-        console.log(`❌ [${baseUrl}] クレジット切れ画面のため除外`);
-        return null;
-      }
-
-      throw new Error(`ステータス: ${res.status}`);
-
-    } catch (err) {
-      clearTimeout(timeoutId);
-      if (attempt < maxAttempts) {
-        return await fetchWithRetry(baseUrl, attempt + 1);
-      }
-      return null;
+      return null; // クレジット切れなどは除外
+    } catch {
+      return null; // タイムアウトや落ちている場合は無視
     }
   };
 
-  const tasks = SANDBOX_URLS.map(async (url) => {
-    const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
-    return await fetchWithRetry(baseUrl);
-  });
-  
-  const results = await Promise.all(tasks);
-  const validResults = results.filter(r => r !== null);
-
-  if (validResults.length > 0) {
-    validResults.sort((a, b) => {
-      if (a.reason.includes("Direct OK") && !b.reason.includes("Direct OK")) return -1;
-      if (!a.reason.includes("Direct OK") && b.reason.includes("Direct OK")) return 1;
-      return a.pingMs - b.pingMs;
-    });
-    return `${validResults[0].baseUrl} (判定: ${validResults[0].reason})`;
-  } else {
-    return "⚠️ すべてのサブ垢のクレジットが切れているか、停止しています。";
+  try {
+    const tasks = SANDBOX_URLS.map(url => raceTask(url));
+    const results = await Promise.all(tasks);
+    clearTimeout(timeoutId);
+    return results.filter(r => r !== null);
+  } catch {
+    return []; // エラー時は空配列を返す
   }
 }
+
+// 🌐 巡回アクセスを受信したときの処理
+app.get('/', async (req, res) => {
+  console.log(`[${new Date().toLocaleString("ja-JP")}] Vercel超速見切りモード実行`);
+
+  try {
+    // 7.5秒だけ本気で生存確認を待ってみる
+    const validResults = await checkInstancesWithTimeout();
+
+    let replyMessage = "";
+
+    if (validResults.length > 0) {
+      // 🎉 7.5秒以内に起きてるやつが見つかった場合
+      validResults.sort((a, b) => {
+        if (a.reason === "Direct OK" && b.reason !== "Direct OK") return -1;
+        if (a.reason !== "Direct OK" && b.reason === "Direct OK") return 1;
+        return a.pingMs - b.pingMs;
+      });
+      
+      replyMessage = `📺 自作YouTubeサイト案内Bot (最速選別完了)
+
+現在クレジットが残っていてすぐ動くURLはこちらです！
+👇
+${validResults[0].baseUrl} (${validResults[0].reason})`;
+
+    } else {
+      // ⏳ 7.5秒以内に返事がなかった場合（CodeSandboxがまだ爆睡中のとき）
+      // タイムアウトエラーで落ちる前に、今起こし中のURLを全部送ってVercelの処理を終わらせる！
+      replyMessage = `📺 自作YouTubeサイト案内Bot (一斉起床ノック送信)
+
+サブ垢がまだ爆睡中のため、現在一斉に叩き起こしています！
+15秒ほど待ってから、以下のどれかを選んで踏んでみてください（どれかが生きてます！）
+👇
+① ${SANDBOX_URLS[0]}
+② ${SANDBOX_URLS[1]}
+③ ${SANDBOX_URLS[2]}`;
+    }
+
+    // Chatworkに送信
+    await sendChatworkMessage(replyMessage);
+    res.status(200).send("Vercelタイムアウト回避成功。Chatworkへ送信しました。");
+
+  } catch (error) {
+    res.status(500).send(`エラー: ${error.message}`);
+  }
+});
+
+export default app;
