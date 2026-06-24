@@ -8,39 +8,41 @@ app.use(express.urlencoded({ extended: true }));
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
 const CHATWORK_ROOM_ID = "440162416"; 
 
+// 【あなたの量産したサブ垢のCodeSandbox URLリスト】
 const SANDBOX_URLS = [
   "https://jhsnlx-8080.csb.app",
   "https://v52l6d-8080.csb.app/"
 ];
 // ===================================================
 
-// 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
-app.get('/', async (req, res) => {
-  const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  
-  // 画面（ブラウザ）に返すためのレポート用テキストを溜める変数
-  let htmlReport = `
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>CodeSandbox 接続テスト結果</title>
-      <style>
-        body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; padding: 20px; line-height: 1.5; }
-        h1 { color: #569cd6; border-bottom: 1px solid #3c3c3c; padding-bottom: 10px; }
-        .box { background: #252526; border: 1px solid #3c3c3c; padding: 15px; margin-bottom: 20px; border-radius: 4px; }
-        .url { font-weight: bold; color: #4ec9b0; }
-        .status { font-weight: bold; padding: 2px 6px; border-radius: 3px; }
-        .success { background: #164320; color: #b5cea8; }
-        .error { background: #4a1515; color: #f44747; }
-        pre { background: #2d2d2d; padding: 10px; overflow-x: auto; border-radius: 4px; color: #9cdcfe; white-space: pre-wrap; word-wrap: break-word; }
-      </style>
-    </head>
-    <body>
-      <h1>🔍 CodeSandbox 生存確認レポート</h1>
-      <p>実行時刻: ${nowStr}</p>
-  `;
+let latestAvailableUrl = "現在、利用可能なサーバーがありません。";
+let currentPingTime = ""; 
 
-  // 生存確認レースのタスク
+async function sendChatworkMessage(message) {
+  const res = await fetch(
+    `https://api.chatwork.com/v2/rooms/${CHATWORK_ROOM_ID}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "X-ChatWorkToken": CHATWORK_API_TOKEN,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ body: message }),
+    }
+  );
+  if (!res.ok) {
+    console.log("❌ Chatwork送信エラー:", await res.text());
+  } else {
+    console.log("🚀 Chatworkへの自動通知に成功しました！");
+  }
+}
+
+// 🛠️ 全サブ垢の生存確認を行う関数
+async function checkAllInstances() {
+  console.log(`[${new Date().toLocaleString("ja-JP")}] 全サブ垢の生存確認（クッション画面許容モード）を開始します...`);
+  
+  currentPingTime = ""; 
+
   const raceTask = async (url) => {
     const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
     const controller = new AbortController();
@@ -48,17 +50,15 @@ app.get('/', async (req, res) => {
     // ⚡ Vercelの上限ギリギリの9秒まで粘る
     const timeoutId = setTimeout(() => controller.abort(), 9000); 
 
-    let resultLog = `<div class="box"><span class="url">🔗 Target: ${baseUrl}</span><br><br>`;
-
     try {
       const startTime = performance.now();
 
-      const response = await fetch(`${baseUrl}/api/ping`, {
+      const res = await fetch(`${baseUrl}/api/ping`, {
         signal: controller.signal,
         headers: { 
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
           "X-CSB-Skip-Incap-Check": "true",
-          "Accept": "application/json"
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
         }
       });
       clearTimeout(timeoutId);
@@ -66,83 +66,78 @@ app.get('/', async (req, res) => {
       const endTime = performance.now();
       const pingMs = Math.round(endTime - startTime);
 
-      if (response.status === 200) {
-        resultLog += `🟢 <span class="status success">STATUS: 200 OK (${pingMs}ms)</span><br><br>`;
-        resultLog += `🎉 正常にExpressと通信できました！</div>`;
-        return { success: true, url: baseUrl, pingMs, log: resultLog };
-      } else {
-        resultLog += `❌ <span class="status error">STATUS: ${response.status}</span><br><br>`;
-        
-        // 200以外の場合、相手が返してきた生の文字（クッション画面のHTMLなど）をぶちまける
-        const rawBody = await response.text();
-        resultLog += `📄 <b>CodeSandboxからの返答（最初の500文字）:</b><br><pre>${escapeHtml(rawBody.substring(0, 500))}</pre></div>`;
-        return { success: false, log: resultLog };
+      // ✨ 【新・生存判定ロジック】
+      // パターン1：奇跡的に直接 200 OK が返ってきた場合
+      if (res.status === 200) {
+        console.log(`🟢 [${baseUrl}] 直接200 OKを検出！`);
+        return { baseUrl, pingMs, reason: "Direct OK" };
       }
+
+      // パターン2：200以外（400など）だけど、中身がHTML（クッション画面）の場合
+      const rawText = await res.text();
+      if (rawText.includes("<!DOCTYPE") || rawText.includes("CodeSandbox") || rawText.includes("preview")) {
+        console.log(`🟢 [${baseUrl}] クッション画面（HTML）を検出。コンテナ自体は生存と判定！`);
+        return { baseUrl, pingMs, reason: "Preview Screen (Alive)" };
+      }
+
+      // クレジット切れなどの本当のエラー画面の場合
+      throw new Error(`Real Error Status: ${res.status}`);
 
     } catch (err) {
       clearTimeout(timeoutId);
-      if (err.name === 'AbortError') {
-        resultLog += `⏳ <span class="status error">TIMEOUT</span><br><br>`;
-        resultLog += `⚠️ 9秒待ってもCodeSandboxから返事がありませんでした（まだ爆睡中か、途中で通信が切られました）。</div>`;
-      } else {
-        resultLog += `💥 <span class="status error">FETCH ERROR</span><br><br>`;
-        resultLog += `⚠️ 通信自体が失敗しました。<br>エラーメッセージ: <pre>${err.message}</pre></div>`;
-      }
-      return { success: false, log: resultLog };
+      console.log(`❌ [${baseUrl}] 停止または本当のエラー: ${err.message}`);
+      return null; 
     }
   };
 
-  // 一斉にチェック開始
-  const results = await Promise.all(SANDBOX_URLS.map(url => raceTask(url)));
+  // 全員のレースを一斉スタートして結果を回収
+  const tasks = SANDBOX_URLS.map(url => raceTask(url));
+  const results = await Promise.all(tasks);
 
-  // 全サブ垢のログをHTMLに合流させる
-  results.forEach(r => { htmlReport += r.log; });
-
-  // 有効なURLがあるか判定
-  const validResults = results.filter(r => r.success);
-  let latestAvailableUrl = "現在、利用可能なサーバーがありません。";
-  let currentPingTime = "";
+  // 生存と判定されたアカウントだけを抽出
+  const validResults = results.filter(r => r !== null);
 
   if (validResults.length > 0) {
-    validResults.sort((a, b) => a.pingMs - b.pingMs);
-    latestAvailableUrl = validResults[0].url;
-    currentPingTime = ` (最速応答: ${validResults[0].pingMs}ms)`;
-  }
-
-  htmlReport += `
-      <div class="box" style="border-color: #569cd6;">
-        <h3>📢 Chatwork宛てに送る予定の判定結果</h3>
-        <p><b>確定URL:</b> ${latestAvailableUrl}${currentPingTime}</p>
-      </div>
-    </body>
-    </html>
-  `;
-
-  // 💥 Chatworkへの送信は、デバッグの邪魔にならないよう裏でそっと投げる（エラーでも画面は止めない）
-  try {
-    const replyMessage = `📺 自作YouTubeサイト案内Bot (デバッグ巡回完了)\n\n現在地URL:\n${latestAvailableUrl}${currentPingTime}`;
-    await fetch(`https://api.chatwork.com/v2/rooms/${CHATWORK_ROOM_ID}/messages`, {
-      method: "POST",
-      headers: {
-        "X-ChatWorkToken": CHATWORK_API_TOKEN,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ body: replyMessage }),
+    // 確実に生きてるやつ（できればDirect OK、なければ最初に見つかったやつ）をチョイス
+    validResults.sort((a, b) => {
+      if (a.reason === "Direct OK" && b.reason !== "Direct OK") return -1;
+      if (a.reason !== "Direct OK" && b.reason === "Direct OK") return 1;
+      return a.pingMs - b.pingMs;
     });
-  } catch (e) {
-    // スルー
+    
+    latestAvailableUrl = validResults[0].baseUrl;
+    currentPingTime = ` (判定: ${validResults[0].reason})`;
+    console.log("🟢 決定した生存URL:", latestAvailableUrl);
+  } else {
+    latestAvailableUrl = "⚠️ すべてのサブ垢のクレジットが切れているか、完全に停止しています。";
+    currentPingTime = "";
+    console.log("⚠️ 生きているアカウントが一つも見つかりませんでした。");
   }
-
-  // 🎯 最後に完成した綺麗（？）なデバッグ画面をブラウザにドン！と返す
-  res.status(200).send(htmlReport);
-});
-
-// HTMLのタグをバグらせずに文字として表示するための便利関数
-function escapeHtml(string) {
-  if (typeof string !== 'string') return string;
-  return string.replace(/[&'`"<>]/g, function (match) {
-    return { '&': '&amp;', "'": '&#x27;', '`': '&#x60;', '"': '&quot;', '<': '&lt;', '>': '&gt;' }[match];
-  });
 }
+
+// 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
+app.get('/', async (req, res) => {
+  const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+  console.log(`[${nowStr}] 定期チェックアクセスを受信`);
+
+  try {
+    await checkAllInstances();
+
+    const replyMessage = 
+`📺 自作YouTubeサイト案内Bot (自動巡回完了)
+
+現在クレジットが残っていて快適に動くURLはこちらです！
+👇
+${latestAvailableUrl}${currentPingTime}`;
+
+    await sendChatworkMessage(replyMessage);
+
+    res.status(200).send(`巡回＆Chatworkへの投稿が完了しました。最新URL: ${latestAvailableUrl}`);
+
+  } catch (error) {
+    console.error("処理中でエラー発生:", error);
+    res.status(500).send(`エラーが発生しました:\n${error.message}`);
+  }
+});
 
 export default app;
