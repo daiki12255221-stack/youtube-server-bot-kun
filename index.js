@@ -1,3 +1,5 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+
 // ================== 【設定エリア】 ==================
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
 const CHATWORK_ROOM_ID = "440162416"; 
@@ -10,33 +12,29 @@ const SANDBOX_URLS = [
 ];
 // ===================================================
 
-export default {
-  async fetch(request, env, ctx) {
-    const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-    console.log(`[${nowStr}] Cloudflare Workersが巡回アクセスを受信しました`);
+serve(async (req) => {
+  const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+  console.log(`[${nowStr}] Supabaseが巡回アクセスを受信（ブロックなし確定）`);
 
-    try {
-      const latestAvailableUrl = await checkAllInstances();
+  try {
+    const latestAvailableUrl = await checkAllInstances();
 
-      const replyMessage = 
+    const replyMessage = 
 `📺 自作YouTubeサイト案内Bot (自動巡回完了)
 
 現在クレジットが残っていて快適に動くURLはこちらです！
 👇
 ${latestAvailableUrl}`;
 
-      await sendChatworkMessage(replyMessage);
+    await sendChatworkMessage(replyMessage);
 
-      return new Response(`巡回完了。最新URL: ${latestAvailableUrl}`, {
-        headers: { "content-type": "text/plain; charset=UTF-8" }
-      });
+    return new Response(`巡回完了。最新URL: ${latestAvailableUrl}`, { status: 200 });
 
-    } catch (error) {
-      console.error("エラー発生:", error);
-      return new Response(`エラーが発生しました:\n${error.message}`, { status: 500 });
-    }
+  } catch (error) {
+    console.error("エラー発生:", error);
+    return new Response(`エラー: ${error.message}`, { status: 500 });
   }
-};
+});
 
 async function sendChatworkMessage(message) {
   const res = await fetch(
@@ -58,14 +56,10 @@ async function sendChatworkMessage(message) {
 }
 
 async function checkAllInstances() {
-  console.log("サブ垢3つの無限粘り＆リトライ検証を開始します...");
-
   const fetchWithRetry = async (baseUrl, attempt = 1) => {
     const maxAttempts = 3;
-    
-    // Workersの「タイムアウト付き通信」の仕組み（30秒で通信遮断）
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒粘る
 
     try {
       console.log(`📡 [${baseUrl}] 通信試行中... (回数: ${attempt}/${maxAttempts})`);
@@ -84,39 +78,27 @@ async function checkAllInstances() {
       const pingMs = Math.round(endTime - startTime);
 
       if (res.status === 200) {
-        console.log(`🟢 [${baseUrl}] 直接200 OKを検出！ (${pingMs}ms)`);
         return { baseUrl, pingMs, reason: `Direct OK (${attempt}回目)` };
       }
 
       const rawText = await res.text();
 
       if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
-        console.log(`🟢 [${baseUrl}] 本物の生存クッション画面を検出！ (${pingMs}ms)`);
         return { baseUrl, pingMs, reason: `Preview Alive (${attempt}回目)` };
       }
 
       if (rawText.includes("Limit Exceeded") || rawText.includes("Upgrade your plan") || rawText.includes("Credit Expired")) {
-        console.log(`❌ [${baseUrl}] クレジット切れを検出したため、リトライせず終了。`);
+        console.log(`❌ [${baseUrl}] クレジット切れ画面のため除外`);
         return null;
       }
 
-      throw new Error(`想定外のステータス: ${res.status}`);
+      throw new Error(`ステータス: ${res.status}`);
 
     } catch (err) {
       clearTimeout(timeoutId);
-
-      if (err.name === 'AbortError') {
-        console.log(`⏳ [${baseUrl}] 30秒経っても反応なし（タイムアウト）`);
-      } else {
-        console.log(`⚠️ [${baseUrl}] 通信エラー: ${err.message}`);
-      }
-
       if (attempt < maxAttempts) {
-        console.log(`🔄 [${baseUrl}] 反応が遅い、またはエラーのため、再度ノックを叩き直します...`);
         return await fetchWithRetry(baseUrl, attempt + 1);
       }
-
-      console.log(`❌ [${baseUrl}] ${maxAttempts}回叩き直しましたが、完全に沈黙しています。`);
       return null;
     }
   };
@@ -135,11 +117,8 @@ async function checkAllInstances() {
       if (!a.reason.includes("Direct OK") && b.reason.includes("Direct OK")) return 1;
       return a.pingMs - b.pingMs;
     });
-    
-    console.log("🟢 案内対象に決定したURL:", validResults[0].baseUrl);
     return `${validResults[0].baseUrl} (判定: ${validResults[0].reason})`;
   } else {
-    console.log("❌ 生きているアカウントが一つも見つかりませんでした。");
     return "⚠️ すべてのサブ垢のクレジットが切れているか、停止しています。";
   }
 }
