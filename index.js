@@ -8,7 +8,7 @@ app.use(express.urlencoded({ extended: true }));
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
 const CHATWORK_ROOM_ID = "440162416"; 
 
-// 🔥 前の2つ＋今回のテスト用を合わせた合計3つのURLリスト
+// 🔥 3つのURLリスト
 const SANDBOX_URLS = [
   "https://jhsnlx-8080.csb.app",
   "https://v52l6d-8080.csb.app/",
@@ -40,18 +40,19 @@ async function sendChatworkMessage(message) {
 
 // 🛠️ 全サブ垢の生存確認を厳密に行う関数
 async function checkAllInstances() {
-  console.log(`[${new Date().toLocaleString("ja-JP")}] サブ垢3つの選別生存確認レースを開始します（鉄壁ホワイトリスト版）...`);
+  console.log(`[${new Date().toLocaleString("ja-JP")}] サブ垢3つの無限粘り＆リトライ検証を開始します...`);
   
   currentPingTime = ""; 
 
-  const raceTask = async (url) => {
-    const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+  // 遅いとき、応答がないときに最大3回まで叩き直す関数
+  const fetchWithRetry = async (baseUrl, attempt = 1) => {
+    const maxAttempts = 3;
     const controller = new AbortController();
-    
-    // ⚡ Vercelの上限ギリギリの9秒まで粘る
-    const timeoutId = setTimeout(() => controller.abort(), 9000); 
+    // ⚡ Vercelを卒業したので、1回あたり「30秒」までじっくり待ちます
+    const timeoutId = setTimeout(() => controller.abort(), 30000); 
 
     try {
+      console.log(`📡 [${baseUrl}] 通信試行中... (回数: ${attempt}/${maxAttempts})`);
       const startTime = performance.now();
 
       const res = await fetch(`${baseUrl}/api/ping`, {
@@ -66,33 +67,54 @@ async function checkAllInstances() {
       const endTime = performance.now();
       const pingMs = Math.round(endTime - startTime);
 
-      // 【判定1】 直接200 OKが返ってきたら完璧な生存！
+      // 【判定1】 直接200 OK
       if (res.status === 200) {
-        console.log(`🟢 [${baseUrl}] 直接200 OKを検出！`);
-        return { baseUrl, pingMs, reason: "Direct OK" };
+        console.log(`🟢 [${baseUrl}] 直接200 OKを検出！ (${pingMs}ms)`);
+        return { baseUrl, pingMs, reason: `Direct OK (${attempt}回目で成功)` };
       }
 
-      // 【判定2】 200以外だった場合、HTMLの中身をチェック
+      // 【判定2】 200以外の場合、HTML中身チェック
       const rawText = await res.text();
 
-      // ⭕ 【ホワイトリスト検証】 使えるクッション画面特有のキーワードが「確実に含まれている場合だけ」生存と認める！
       if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
-        console.log(`🟢 [${baseUrl}] 本物の「生存クッション画面」を検出しました。`);
-        return { baseUrl, pingMs, reason: "Preview Alive" };
+        console.log(`🟢 [${baseUrl}] 本物の生存クッション画面を検出！ (${pingMs}ms)`);
+        return { baseUrl, pingMs, reason: `Preview Alive (${attempt}回目で成功)` };
       }
 
-      // 🚨 上記の安全なキーワードが1つも入っていないHTMLは、すべて「死んでいる（クレジット切れなど）」と判定して即除外！
-      console.log(`❌ [${baseUrl}] 警告：有効なクッション画面キーワードがありません。クレジット切れ、または別のエラーと判断し除外します。`);
-      throw new Error("Not a valid preview screen (Maybe Credit Expired)");
+      // クレジット切れなどの場合はリトライせず即時NG
+      if (rawText.includes("Limit Exceeded") || rawText.includes("Upgrade your plan") || rawText.includes("Credit Expired")) {
+        console.log(`❌ [${baseUrl}] クレジット切れを検出したため、リトライせず終了。`);
+        return null;
+      }
+
+      throw new Error(`想定外のステータス: ${res.status}`);
 
     } catch (err) {
       clearTimeout(timeoutId);
-      console.log(`❌ [${baseUrl}] 停止または無効: ${err.message}`);
-      return null; 
+
+      if (err.name === 'AbortError') {
+        console.log(`⏳ [${baseUrl}] 30秒経っても反応なし（タイムアウト）`);
+      } else {
+        console.log(`⚠️ [${baseUrl}] 通信エラー: ${err.message}`);
+      }
+
+      // 🔄 回数が残っていれば、その場ですぐにもう一度叩き直す！
+      if (attempt < maxAttempts) {
+        console.log(`🔄 [${baseUrl}] 反応が遅い、またはエラーのため、再度ノックを叩き直します...`);
+        return await fetchWithRetry(baseUrl, attempt + 1);
+      }
+
+      console.log(`❌ [${baseUrl}] ${maxAttempts}回叩き直しましたが、完全に沈黙しています。`);
+      return null;
     }
   };
 
-  // 3つ同時にチェック開始
+  const raceTask = async (url) => {
+    const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+    return await fetchWithRetry(baseUrl);
+  };
+
+  // 3つ同時に粘り込みレース開始
   const tasks = SANDBOX_URLS.map(url => raceTask(url));
   const results = await Promise.all(tasks);
 
@@ -100,16 +122,15 @@ async function checkAllInstances() {
   const validResults = results.filter(r => r !== null);
 
   if (validResults.length > 0) {
-    // 優先順位：①Direct OK ＞ ②Preview Alive（その中なら応答が速い順）
     validResults.sort((a, b) => {
-      if (a.reason === "Direct OK" && b.reason !== "Direct OK") return -1;
-      if (a.reason !== "Direct OK" && b.reason === "Direct OK") return 1;
+      if (a.reason.includes("Direct OK") && !b.reason.includes("Direct OK")) return -1;
+      if (!a.reason.includes("Direct OK") && b.reason.includes("Direct OK")) return 1;
       return a.pingMs - b.pingMs;
     });
     
     latestAvailableUrl = validResults[0].baseUrl;
     currentPingTime = ` (判定: ${validResults[0].reason})`;
-    console.log("🟢 案内対象に決定した最速URL:", latestAvailableUrl);
+    console.log("🟢 案内対象に決定したURL:", latestAvailableUrl);
   } else {
     latestAvailableUrl = "⚠️ すべてのサブ垢のクレジットが切れているか、停止しています。";
     currentPingTime = "";
@@ -120,7 +141,7 @@ async function checkAllInstances() {
 // 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
 app.get('/', async (req, res) => {
   const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  console.log(`[${nowStr}] 巡回アクセスを受信（3面待ち選別モード）`);
+  console.log(`[${nowStr}] 常駐サーバーにアクセスを受信`);
 
   try {
     await checkAllInstances();
@@ -134,12 +155,18 @@ ${latestAvailableUrl}${currentPingTime}`;
 
     await sendChatworkMessage(replyMessage);
 
-    res.status(200).send(`3面巡回＆Chatworkへの投稿が完了しました。最新URL: ${latestAvailableUrl}`);
+    res.status(200).send(`巡回完了。最新URL: ${latestAvailableUrl}`);
 
   } catch (error) {
-    console.error("処理中でエラー発生:", error);
+    console.error("エラー発生:", error);
     res.status(500).send(`エラーが発生しました:\n${error.message}`);
   }
+});
+
+// 🚀 Zeabur/Glitch等の常駐サーバー配信用ポート待ち受けを追加
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🟢 Bot server successfully running on port ${PORT} 🎉`);
 });
 
 export default app;
