@@ -40,7 +40,7 @@ async function sendChatworkMessage(message) {
 
 // 🛠️ 全サブ垢の生存確認を厳密に行う関数
 async function checkAllInstances() {
-  console.log(`[${new Date().toLocaleString("ja-JP")}] サブ垢3つの選別生存確認レースを開始します...`);
+  console.log(`[${new Date().toLocaleString("ja-JP")}] サブ垢3つの選別生存確認レースを開始します（鉄壁ホワイトリスト版）...`);
   
   currentPingTime = ""; 
 
@@ -75,19 +75,15 @@ async function checkAllInstances() {
       // 【判定2】 200以外だった場合、HTMLの中身をチェック
       const rawText = await res.text();
 
-      // 🚨 クレジット切れなどの「本当に死んでる画面」のキーワードを検知したら即除外
-      if (rawText.includes("Limit Exceeded") || rawText.includes("Upgrade your plan") || rawText.includes("Credit Expired")) {
-        console.log(`❌ [${baseUrl}] クレジット切れ画面のため除外します。`);
-        throw new Error("Credit Expired");
-      }
-
-      // ⭕ 使えるクッション画面特有のキーワードがあれば生存とみなす
+      // ⭕ 【ホワイトリスト検証】 使えるクッション画面特有のキーワードが「確実に含まれている場合だけ」生存と認める！
       if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
-        console.log(`🟢 [${baseUrl}] 生存クッション画面を検出！`);
+        console.log(`🟢 [${baseUrl}] 本物の「生存クッション画面」を検出しました。`);
         return { baseUrl, pingMs, reason: "Preview Alive" };
       }
 
-      throw new Error(`想定外のステータス: ${res.status}`);
+      // 🚨 上記の安全なキーワードが1つも入っていないHTMLは、すべて「死んでいる（クレジット切れなど）」と判定して即除外！
+      console.log(`❌ [${baseUrl}] 警告：有効なクッション画面キーワードがありません。クレジット切れ、または別のエラーと判断し除外します。`);
+      throw new Error("Not a valid preview screen (Maybe Credit Expired)");
 
     } catch (err) {
       clearTimeout(timeoutId);
