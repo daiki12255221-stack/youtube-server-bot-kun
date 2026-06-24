@@ -6,7 +6,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ================== 【設定エリア】 ==================
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
-const CHATWORK_ROOM_ID = "440162416"; // 案内を自動投稿したいチャット部屋のID
+const CHATWORK_ROOM_ID = "440162416"; 
 
 // 【あなたの量産したサブ垢のCodeSandbox URLリスト】
 const SANDBOX_URLS = [
@@ -16,8 +16,8 @@ const SANDBOX_URLS = [
 // ===================================================
 
 let latestAvailableUrl = "現在、利用可能なサーバーがありません。";
+let currentPingTime = ""; 
 
-// 💬 Chatworkにメッセージを送信する共通関数
 async function sendChatworkMessage(message) {
   const res = await fetch(
     `https://api.chatwork.com/v2/rooms/${CHATWORK_ROOM_ID}/messages`,
@@ -37,17 +37,22 @@ async function sendChatworkMessage(message) {
   }
 }
 
-// 🛠️ 全サブ垢の生存確認レースを行う関数
+// 🛠️ 【一斉レース復活】全サブ垢の生存確認レースを行う関数
 async function checkAllInstances() {
-  console.log(`[${new Date().toLocaleString("ja-JP")}] 全サブ垢の生存確認を開始します...`);
+  console.log(`[${new Date().toLocaleString("ja-JP")}] 全サブ垢の一斉生存確認レース（7.5秒制限）を開始します...`);
+  
+  currentPingTime = ""; 
 
   const raceTask = async (url) => {
     const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
     const controller = new AbortController();
-    // 🔥【Vercelタイムアウト対策】制限時間を8秒から4秒に縮めて、全体の処理が10秒を超えないようにします
-    const timeoutId = setTimeout(() => controller.abort(), 4000); 
+    
+    // ✨【7.5秒待ち】爆睡しているコンテナもじっくり待つ
+    const timeoutId = setTimeout(() => controller.abort(), 7500); 
 
     try {
+      const startTime = performance.now();
+
       const res = await fetch(`${baseUrl}/api/ping`, {
         signal: controller.signal,
         headers: { "User-Agent": "Sandbox-Watcher-Bot" }
@@ -55,7 +60,10 @@ async function checkAllInstances() {
       clearTimeout(timeoutId);
 
       if (res.status === 200) {
-        return baseUrl;
+        const endTime = performance.now();
+        const pingMs = Math.round(endTime - startTime); 
+        // URLと応答速度のセットを返す
+        return { baseUrl, pingMs }; 
       }
       throw new Error(`Status: ${res.status}`);
     } catch (err) {
@@ -65,42 +73,39 @@ async function checkAllInstances() {
   };
 
   try {
-    const fastestLiveUrl = await Promise.any(
+    // ⚡ Promise.any で、一番最初に 200 OK を返してきた「最速インスタンス」をキャッチ！
+    const fastestResult = await Promise.any(
       SANDBOX_URLS.map(url => raceTask(url))
     );
-    latestAvailableUrl = fastestLiveUrl;
-    console.log("🟢 現在の最適生存URL:", latestAvailableUrl);
+    
+    latestAvailableUrl = fastestResult.baseUrl;
+    currentPingTime = ` (最速応答: ${fastestResult.pingMs}ms)`;
+    console.log("🟢 現在の最速生存URL:", latestAvailableUrl, currentPingTime);
+
   } catch (error) {
     latestAvailableUrl = "⚠️ すべてのサブ垢のクレジットが切れているか、停止しています。";
+    currentPingTime = "";
     console.error("❌ 生きているアカウントが一つも見つかりませんでした。");
   }
 }
 
-// ---------------------------------------------------
 // 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
-// ---------------------------------------------------
 app.get('/', async (req, res) => {
   const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  console.log(`[${nowStr}] 定期チェックアクセスを受信（24時間稼働モード）`);
+  console.log(`[${nowStr}] 定期チェックアクセスを受信（1時間おき・最速レースモード）`);
 
   try {
-    // ⚡【凍結防止対策】
-    // 先にレスポンスを返さず、生存確認とChatworkへの投稿が「完全に終わるまで」しっかり待ちます！
-    
-    // 1. サブ垢の生存確認を走らせる（最長4秒）
     await checkAllInstances();
 
-    // 2. 最新のURLをChatworkに投稿する（約1〜2秒）
     const replyMessage = 
 `📺 自作YouTubeサイト案内Bot (自動巡回完了)
 
 現在クレジットが残っていて快適に動くURLはこちらです！
 👇
-${latestAvailableUrl}`;
+${latestAvailableUrl}${currentPingTime}`;
 
     await sendChatworkMessage(replyMessage);
 
-    // ✨ すべての処理が無事に終わった後に、クローンジョブに「完了したよ！」と返信します
     res.status(200).send(`巡回＆Chatworkへの投稿が完了しました。最新URL: ${latestAvailableUrl}`);
 
   } catch (error) {
@@ -109,5 +114,4 @@ ${latestAvailableUrl}`;
   }
 });
 
-// 🔥【Vercel対応】Expressのインスタンスをデフォルトエクスポート
 export default app;
