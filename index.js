@@ -10,8 +10,8 @@ const CHATWORK_ROOM_ID = "440162416";
 
 // 【あなたの量産したサブ垢のCodeSandbox URLリスト】
 const SANDBOX_URLS = [
-  "https://jhsnlx-8080.csb.app",
-  "https://v52l6d-8080.csb.app/"
+  "https://jhsnlx-8080.csb.app/",
+  ""
 ];
 // ===================================================
 
