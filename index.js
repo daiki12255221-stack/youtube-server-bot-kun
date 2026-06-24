@@ -37,9 +37,9 @@ async function sendChatworkMessage(message) {
   }
 }
 
-// 🛠️ 【一斉レース復活】全サブ垢の生存確認レースを行う関数
+// 🛠️ 全サブ垢の生存確認レースを行う関数
 async function checkAllInstances() {
-  console.log(`[${new Date().toLocaleString("ja-JP")}] 全サブ垢の一斉生存確認レース（7.5秒制限）を開始します...`);
+  console.log(`[${new Date().toLocaleString("ja-JP")}] 全サブ垢の一斉生存確認レース（9秒限界突破版）を開始します...`);
   
   currentPingTime = ""; 
 
@@ -47,8 +47,8 @@ async function checkAllInstances() {
     const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
     const controller = new AbortController();
     
-    // ✨【7.5秒待ち】爆睡しているコンテナもじっくり待つ
-    const timeoutId = setTimeout(() => controller.abort(), 7500); 
+    // ⚡【9秒待ち】Vercelが死ぬ直前の9秒まで待機時間を伸ばして、生存確率をUP！
+    const timeoutId = setTimeout(() => controller.abort(), 9000); 
 
     try {
       const startTime = performance.now();
@@ -62,37 +62,42 @@ async function checkAllInstances() {
       if (res.status === 200) {
         const endTime = performance.now();
         const pingMs = Math.round(endTime - startTime); 
-        // URLと応答速度のセットを返す
         return { baseUrl, pingMs }; 
       }
       throw new Error(`Status: ${res.status}`);
     } catch (err) {
       clearTimeout(timeoutId);
-      throw err;
+      // 💥 他のプロミスの足を引っ張らないよう、エラー時はnullを返す安全設計に
+      return null; 
     }
   };
 
-  try {
-    // ⚡ Promise.any で、一番最初に 200 OK を返してきた「最速インスタンス」をキャッチ！
-    const fastestResult = await Promise.any(
-      SANDBOX_URLS.map(url => raceTask(url))
-    );
-    
-    latestAvailableUrl = fastestResult.baseUrl;
-    currentPingTime = ` (最速応答: ${fastestResult.pingMs}ms)`;
-    console.log("🟢 現在の最速生存URL:", latestAvailableUrl, currentPingTime);
+  // 全員のレースを一斉スタート
+  const tasks = SANDBOX_URLS.map(url => raceTask(url));
+  const results = await Promise.all(tasks);
 
-  } catch (error) {
+  // 🎯 nullじゃない（200 OKで成功した）有効な結果だけを抽出
+  const validResults = results.filter(r => r !== null);
+
+  if (validResults.length > 0) {
+    // 🚀 一番応答速度（pingMs）が速かった最速インスタンスをチョイス！
+    validResults.sort((a, b) => a.pingMs - b.pingMs);
+    
+    latestAvailableUrl = validResults[0].baseUrl;
+    currentPingTime = ` (最速応答: ${validResults[0].pingMs}ms)`;
+    console.log("🟢 現在の最速生存URL:", latestAvailableUrl, currentPingTime);
+  } else {
+    // ⚠️ 全滅した場合もエラーで落とさず、安全にメッセージを代入
     latestAvailableUrl = "⚠️ すべてのサブ垢のクレジットが切れているか、停止しています。";
     currentPingTime = "";
-    console.error("❌ 生きているアカウントが一つも見つかりませんでした。");
+    console.log("⚠️ 生きているアカウントが一つも見つかりませんでした（全員スリープ中、または上限切れ）。");
   }
 }
 
 // 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
 app.get('/', async (req, res) => {
   const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  console.log(`[${nowStr}] 定期チェックアクセスを受信（1時間おき・最速レースモード）`);
+  console.log(`[${nowStr}] 定期チェックアクセスを受信（エラー完全回避モード）`);
 
   try {
     await checkAllInstances();
