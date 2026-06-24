@@ -31,88 +31,82 @@ async function sendChatworkMessage(message) {
   if (!res.ok) console.log("❌ Chatwork送信エラー:", await res.text());
 }
 
-// 🛠️ Vercelの10秒制限の枠内で選別する関数
-async function checkInstancesWithTimeout() {
+// 🛠️ 1つのURLに対して、Vercelが死なない程度の短時間で生存確認する関数
+async function checkSingleInstance(url) {
+  const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
   const controller = new AbortController();
-  // ⚡ Vercelが死ぬ前に「7.5秒」で強引に見切るタイマー
-  const timeoutId = setTimeout(() => controller.abort(), 7500); 
-
-  const raceTask = async (url) => {
-    const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
-    try {
-      const startTime = performance.now();
-      const res = await fetch(`${baseUrl}/api/ping`, {
-        signal: controller.signal,
-        headers: { 
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        }
-      });
-
-      const pingMs = Math.round(performance.now() - startTime);
-
-      if (res.status === 200) return { baseUrl, pingMs, reason: "Direct OK" };
-
-      const rawText = await res.text();
-      if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
-        return { baseUrl, pingMs, reason: "Preview Alive" };
-      }
-      return null; // クレジット切れなどは除外
-    } catch {
-      return null; // タイムアウトや落ちている場合は無視
-    }
-  };
+  
+  // ⚡ 1つのURLにつき「最長2.5秒」だけ待つ（寝起きが遅ければ次へ行く）
+  const timeoutId = setTimeout(() => controller.abort(), 2500); 
 
   try {
-    const tasks = SANDBOX_URLS.map(url => raceTask(url));
-    const results = await Promise.all(tasks);
+    const res = await fetch(`${baseUrl}/api/ping`, {
+      signal: controller.signal,
+      headers: { 
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      }
+    });
     clearTimeout(timeoutId);
-    return results.filter(r => r !== null);
-  } catch {
-    return []; // エラー時は空配列を返す
+
+    if (res.status === 200) {
+      return { baseUrl, success: true, reason: "Direct OK" };
+    }
+
+    const rawText = await res.text();
+    // ホワイトリスト検証
+    if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
+      return { baseUrl, success: true, reason: "Preview Alive" };
+    }
+
+    // クレジット切れ画面などの場合は不合格
+    return null;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    return null; // タイムアウトやエラーは不合格（次へ行く）
   }
 }
 
-// 🌐 巡回アクセスを受信したときの処理
+// 🌐 1時間ごとのcronアクセスを受信するメイン処理
 app.get('/', async (req, res) => {
-  console.log(`[${new Date().toLocaleString("ja-JP")}] Vercel超速見切りモード実行`);
+  console.log(`[${new Date().toLocaleString("ja-JP")}] Vercel順次ノック選別を開始します...`);
+
+  let finalUrl = null;
+  let finalReason = "";
+
+  // 🔄 3つのURLを上から順番に1個ずつチェックしていく（一発抜け方式）
+  for (const url of SANDBOX_URLS) {
+    console.log(`📡 👀 【調査中】: ${url}`);
+    const result = await checkSingleInstance(url);
+    
+    if (result && result.success) {
+      // 🎉 生きている（使える）やつを見つけた瞬間に、残りのURLのチェックを止めてループを抜ける！
+      finalUrl = result.baseUrl;
+      finalReason = result.reason;
+      break; 
+    }
+  }
 
   try {
-    // 7.5秒だけ本気で生存確認を待ってみる
-    const validResults = await checkInstancesWithTimeout();
-
     let replyMessage = "";
 
-    if (validResults.length > 0) {
-      // 🎉 7.5秒以内に起きてるやつが見つかった場合
-      validResults.sort((a, b) => {
-        if (a.reason === "Direct OK" && b.reason !== "Direct OK") return -1;
-        if (a.reason !== "Direct OK" && b.reason === "Direct OK") return 1;
-        return a.pingMs - b.pingMs;
-      });
-      
-      replyMessage = `📺 自作YouTubeサイト案内Bot (最速選別完了)
+    if (finalUrl) {
+      // 🟢 使えるURLが1本ビシッと決まった場合
+      replyMessage = `📺 自作YouTubeサイト案内Bot (自動巡回完了)
 
-現在クレジットが残っていてすぐ動くURLはこちらです！
+現在クレジットが残っていて快適に動くURLはこちらです！
 👇
-${validResults[0].baseUrl} (${validResults[0].reason})`;
-
+${finalUrl} (判定: ${finalReason})`;
     } else {
-      // ⏳ 7.5秒以内に返事がなかった場合（CodeSandboxがまだ爆睡中のとき）
-      // タイムアウトエラーで落ちる前に、今起こし中のURLを全部送ってVercelの処理を終わらせる！
-      replyMessage = `📺 自作YouTubeサイト案内Bot (一斉起床ノック送信)
+      // ❌ 3つとも2.5秒以内に起きなかった、またはクレジット切れだった場合
+      replyMessage = `📺 自作YouTubeサイト案内Bot (警告)
 
-サブ垢がまだ爆睡中のため、現在一斉に叩き起こしています！
-15秒ほど待ってから、以下のどれかを選んで踏んでみてください（どれかが生きてます！）
-👇
-① ${SANDBOX_URLS[0]}
-② ${SANDBOX_URLS[1]}
-③ ${SANDBOX_URLS[2]}`;
+⚠️ 現在、利用可能なサブ垢がすべて停止しているか、クレジットが切れている可能性があります。`;
     }
 
-    // Chatworkに送信
+    // Chatworkに決定版を1本だけ送信
     await sendChatworkMessage(replyMessage);
-    res.status(200).send("Vercelタイムアウト回避成功。Chatworkへ送信しました。");
+    res.status(200).send(`巡回完了。結果をChatworkへ送信しました。`);
 
   } catch (error) {
     res.status(500).send(`エラー: ${error.message}`);
