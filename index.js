@@ -1,9 +1,3 @@
-import express from 'express';
-
-const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
 // ================== 【設定エリア】 ==================
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
 const CHATWORK_ROOM_ID = "440162416"; 
@@ -16,8 +10,33 @@ const SANDBOX_URLS = [
 ];
 // ===================================================
 
-let latestAvailableUrl = "現在、利用可能なサーバーがありません。";
-let currentPingTime = ""; 
+export default {
+  async fetch(request, env, ctx) {
+    const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
+    console.log(`[${nowStr}] Cloudflare Workersが巡回アクセスを受信しました`);
+
+    try {
+      const latestAvailableUrl = await checkAllInstances();
+
+      const replyMessage = 
+`📺 自作YouTubeサイト案内Bot (自動巡回完了)
+
+現在クレジットが残っていて快適に動くURLはこちらです！
+👇
+${latestAvailableUrl}`;
+
+      await sendChatworkMessage(replyMessage);
+
+      return new Response(`巡回完了。最新URL: ${latestAvailableUrl}`, {
+        headers: { "content-type": "text/plain; charset=UTF-8" }
+      });
+
+    } catch (error) {
+      console.error("エラー発生:", error);
+      return new Response(`エラーが発生しました:\n${error.message}`, { status: 500 });
+    }
+  }
+};
 
 async function sendChatworkMessage(message) {
   const res = await fetch(
@@ -38,22 +57,19 @@ async function sendChatworkMessage(message) {
   }
 }
 
-// 🛠️ 全サブ垢の生存確認を厳密に行う関数
 async function checkAllInstances() {
-  console.log(`[${new Date().toLocaleString("ja-JP")}] サブ垢3つの無限粘り＆リトライ検証を開始します...`);
-  
-  currentPingTime = ""; 
+  console.log("サブ垢3つの無限粘り＆リトライ検証を開始します...");
 
-  // 遅いとき、応答がないときに最大3回まで叩き直す関数
   const fetchWithRetry = async (baseUrl, attempt = 1) => {
     const maxAttempts = 3;
+    
+    // Workersの「タイムアウト付き通信」の仕組み（30秒で通信遮断）
     const controller = new AbortController();
-    // ⚡ Vercelを卒業したので、1回あたり「30秒」までじっくり待ちます
-    const timeoutId = setTimeout(() => controller.abort(), 30000); 
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
       console.log(`📡 [${baseUrl}] 通信試行中... (回数: ${attempt}/${maxAttempts})`);
-      const startTime = performance.now();
+      const startTime = Date.now();
 
       const res = await fetch(`${baseUrl}/api/ping`, {
         signal: controller.signal,
@@ -64,24 +80,21 @@ async function checkAllInstances() {
       });
       clearTimeout(timeoutId);
 
-      const endTime = performance.now();
+      const endTime = Date.now();
       const pingMs = Math.round(endTime - startTime);
 
-      // 【判定1】 直接200 OK
       if (res.status === 200) {
         console.log(`🟢 [${baseUrl}] 直接200 OKを検出！ (${pingMs}ms)`);
-        return { baseUrl, pingMs, reason: `Direct OK (${attempt}回目で成功)` };
+        return { baseUrl, pingMs, reason: `Direct OK (${attempt}回目)` };
       }
 
-      // 【判定2】 200以外の場合、HTML中身チェック
       const rawText = await res.text();
 
       if (rawText.includes("proceed to preview") || rawText.includes("Yes, proceed") || rawText.includes("sandbox was sleeping")) {
         console.log(`🟢 [${baseUrl}] 本物の生存クッション画面を検出！ (${pingMs}ms)`);
-        return { baseUrl, pingMs, reason: `Preview Alive (${attempt}回目で成功)` };
+        return { baseUrl, pingMs, reason: `Preview Alive (${attempt}回目)` };
       }
 
-      // クレジット切れなどの場合はリトライせず即時NG
       if (rawText.includes("Limit Exceeded") || rawText.includes("Upgrade your plan") || rawText.includes("Credit Expired")) {
         console.log(`❌ [${baseUrl}] クレジット切れを検出したため、リトライせず終了。`);
         return null;
@@ -98,7 +111,6 @@ async function checkAllInstances() {
         console.log(`⚠️ [${baseUrl}] 通信エラー: ${err.message}`);
       }
 
-      // 🔄 回数が残っていれば、その場ですぐにもう一度叩き直す！
       if (attempt < maxAttempts) {
         console.log(`🔄 [${baseUrl}] 反応が遅い、またはエラーのため、再度ノックを叩き直します...`);
         return await fetchWithRetry(baseUrl, attempt + 1);
@@ -109,16 +121,12 @@ async function checkAllInstances() {
     }
   };
 
-  const raceTask = async (url) => {
+  const tasks = SANDBOX_URLS.map(async (url) => {
     const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
     return await fetchWithRetry(baseUrl);
-  };
-
-  // 3つ同時に粘り込みレース開始
-  const tasks = SANDBOX_URLS.map(url => raceTask(url));
+  });
+  
   const results = await Promise.all(tasks);
-
-  // 生存判定をパスしたやつだけを抽出
   const validResults = results.filter(r => r !== null);
 
   if (validResults.length > 0) {
@@ -128,45 +136,10 @@ async function checkAllInstances() {
       return a.pingMs - b.pingMs;
     });
     
-    latestAvailableUrl = validResults[0].baseUrl;
-    currentPingTime = ` (判定: ${validResults[0].reason})`;
-    console.log("🟢 案内対象に決定したURL:", latestAvailableUrl);
+    console.log("🟢 案内対象に決定したURL:", validResults[0].baseUrl);
+    return `${validResults[0].baseUrl} (判定: ${validResults[0].reason})`;
   } else {
-    latestAvailableUrl = "⚠️ すべてのサブ垢のクレジットが切れているか、停止しています。";
-    currentPingTime = "";
     console.log("❌ 生きているアカウントが一つも見つかりませんでした。");
+    return "⚠️ すべてのサブ垢のクレジットが切れているか、停止しています。";
   }
 }
-
-// 🌐 サイトのトップページ（ / ）にアクセスがあった時の処理
-app.get('/', async (req, res) => {
-  const nowStr = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  console.log(`[${nowStr}] 常駐サーバーにアクセスを受信`);
-
-  try {
-    await checkAllInstances();
-
-    const replyMessage = 
-`📺 自作YouTubeサイト案内Bot (自動巡回完了)
-
-現在クレジットが残っていて快適に動くURLはこちらです！
-👇
-${latestAvailableUrl}${currentPingTime}`;
-
-    await sendChatworkMessage(replyMessage);
-
-    res.status(200).send(`巡回完了。最新URL: ${latestAvailableUrl}`);
-
-  } catch (error) {
-    console.error("エラー発生:", error);
-    res.status(500).send(`エラーが発生しました:\n${error.message}`);
-  }
-});
-
-// 🚀 Zeabur/Glitch等の常駐サーバー配信用ポート待ち受けを追加
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🟢 Bot server successfully running on port ${PORT} 🎉`);
-});
-
-export default app;
