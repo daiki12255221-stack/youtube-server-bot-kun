@@ -8,7 +8,7 @@ app.use(express.urlencoded({ extended: true }));
 const CHATWORK_API_TOKEN = "47f3a071fe49e7259100d70071c986b7";
 const CHATWORK_ROOM_ID = "440162416"; 
 
-// 🔥 3つのURLリスト（末尾の / はコード側で自動カットして綺麗に処理します）
+// 🔥 最新の4つのURLリスト
 const SANDBOX_URLS = [
   "https://jhsnlx-8080.csb.app",
   "https://3qk3hw-8080.csb.app",
@@ -32,22 +32,20 @@ async function sendChatworkMessage(message) {
   if (!res.ok) console.log("❌ Chatwork送信エラー:", await res.text());
 }
 
-// 🛠️ クッション画面をすっ飛ばして check.html を爆速チェックする関数
+// 🛠️ クッション画面の文言 or ダイレクト直通（200 OK）の両方を1回で判定する関数
 async function checkSingleInstance(url) {
   const baseUrl = url.endsWith('/') ? url.slice(0, -1) : url;
   const controller = new AbortController();
   
-  // ⚡ フロントの軽量HTMLを叩くだけなので、1.5秒で見切る超強気設定
-  const timeoutId = setTimeout(() => controller.abort(), 1500); 
+  // ⚡ 2秒で見切る設定（HTMLの文字チェックなのでこれで十分です）
+  const timeoutId = setTimeout(() => controller.abort(), 2000); 
 
   try {
-    // 💡 末尾に /check.html をつけて、ダイレクトにHTMLを狙い撃ち！
-    const res = await fetch(`${baseUrl}/check.html`, {
+    // 💡 クッションを抜けるためのヘッダーは外し、正面からトップページ（/）を見にいきます
+    const res = await fetch(baseUrl, {
       signal: controller.signal,
       headers: { 
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
-        // 🔥 これで「Yes, proceed」の確認画面を100%完全回避！
-        "x-csb-bypass-proxy": "true",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
       }
     });
@@ -55,34 +53,40 @@ async function checkSingleInstance(url) {
 
     const rawText = await res.text();
 
-    // ⭕ HTMLの中に仕込んだ秘密の合言葉が入っていれば「完全生存」と判定！
-    if (res.status === 200 && rawText.includes("sandbox-is-perfectly-alive")) {
-      console.log(`🟢 [${baseUrl}] check.html の読み込みに成功！(生存確定)`);
+    // 🎯 【ハイブリッド判定ロジック】
+    // パターンA：直接入れて正常に応答した（res.status === 200）
+    // パターンB：クッション画面が出ている（proceed to preview または do you want to continue が含まれる）
+    const isDirectOk = (res.status === 200);
+    const isCushionOk = rawText.includes("proceed to preview") || rawText.includes("do you want to continue");
+
+    if (isDirectOk || isCushionOk) {
+      const mode = isDirectOk ? "ダイレクト直通" : "クッション画面検出";
+      console.log(`🟢 [${baseUrl}] 生存確認に成功しました！ (${mode})`);
       return { baseUrl, success: true };
     }
 
-    console.log(`❌ [${baseUrl}] 合言葉が見つかりません（クレジット切れなどの可能性）`);
+    console.log(`❌ [${baseUrl}] 不合格（クレジット切れエラー画面、または別の応答です）`);
     return null;
   } catch (err) {
     clearTimeout(timeoutId);
-    console.log(`⚠️ [${baseUrl}] 応答なし、またはまだサーバーがスリープ状態です。`);
+    console.log(`⚠️ [${baseUrl}] タイムアウト、またはサーバーが完全に停止しています。`);
     return null; 
   }
 }
 
 // 🌐 1時間ごとのcronアクセスを受信するメイン処理
 app.get('/', async (req, res) => {
-  console.log(`[${new Date().toLocaleString("ja-JP")}] クッション画面バイパス・爆速選別を開始します...`);
+  console.log(`[${new Date().toLocaleString("ja-JP")}] ハイブリッド生存選別を開始します...`);
 
   let finalUrl = null;
 
-  // 🔄 3つのURLを上から順番に1個ずつチェックしていく（一発抜け方式）
+  // 🔄 4つのURLを上から順番に1個ずつチェック（一発抜け方式）
   for (const url of SANDBOX_URLS) {
-    console.log(`📡 👀 【調査中】: ${url}/check.html`);
+    console.log(`📡 👀 【調査中】: ${url}`);
     const result = await checkSingleInstance(url);
     if (result && result.success) {
       finalUrl = result.baseUrl;
-      break; // 生きているやつを見つけた瞬間に残りのループをスキップして終了！
+      break; 
     }
   }
 
@@ -90,20 +94,17 @@ app.get('/', async (req, res) => {
     let replyMessage = "";
 
     if (finalUrl) {
-      // 🟢 使えるURLが1本ビシッと決まった場合
       replyMessage = `📺 自作YouTubeサイト案内Bot (自動巡回完了)
 
 現在クレジットが残っていて快適に動くURLはこちらです！
 👇
 ${finalUrl}`;
     } else {
-      // ❌ 3つとも起きなかった、またはクレジット切れだった場合
       replyMessage = `📺 自作YouTubeサイト案内Bot (警告)
 
 ⚠️ 現在、利用可能なサブ垢がすべて停止しているか、クレジットが切れている可能性があります。`;
     }
 
-    // Chatworkに決定版を1本だけ送信
     await sendChatworkMessage(replyMessage);
     res.status(200).send(`巡回完了。結果をChatworkへ送信しました。`);
 
@@ -112,7 +113,6 @@ ${finalUrl}`;
   }
 });
 
-// ローカル検証用（Vercel側では無視されますが記述しておきます）
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Local server running on port ${PORT}`));
 
