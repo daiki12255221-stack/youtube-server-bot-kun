@@ -11,6 +11,7 @@ const CHATWORK_ROOM_ID = "440162416";
 // 🔥 3つのURLリスト（末尾の / はコード側で自動カットして綺麗に処理します）
 const SANDBOX_URLS = [
   "https://jhsnlx-8080.csb.app",
+  "https://3qk3hw-8080.csb.app",
   "https://v52l6d-8080.csb.app",
   "https://znpf9v-3000.csb.app"
 ];
