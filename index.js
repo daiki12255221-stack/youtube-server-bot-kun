@@ -12,6 +12,7 @@ const CHATWORK_ROOM_ID = "440162416";
 const SANDBOX_URLS = [
   "https://jhsnlx-8080.csb.app",
   "https://3qk3hw-8080.csb.app",
+  "https://szx8km-8080.csb.app",
   "https://v52l6d-8080.csb.app",
   "https://znpf9v-3000.csb.app"
 ];
